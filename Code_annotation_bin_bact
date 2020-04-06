@@ -71,7 +71,11 @@ mkdir TMHMM
 
 "$TMHMM_path" ./Prokka/*.faa -workdir ./TMHMM/ | cat > ./TMHMM/TMHMM_output_file
 
+conda deactivate
+
 ### Predict COGs
+
+module load blast/2.2.29+
 
 mkdir COGs
 cd COGs
@@ -113,6 +117,8 @@ cd ..
 #To run COGNITOR you need a COG domain assignment file (as described in 2.10.). If your file is called COGs.csv, the following command will be used:
 
 "$COGfolder"/COGcognitor/COGcognitor -i=./Blastcog/ -t="$COGcsv" -q=./Sequence_universe/GeneQuery.p2o.csv -o=Output_GeneQuery.assigned_COGs.csv
+
+module unload blast/2.2.29+
 
 ### Compilation file
 
@@ -241,8 +247,6 @@ paste Column_1_concat Columns_1_2_concatenated_last_column Columns_1_3_concatena
 cp Concatenated_COGs_output ../../Master_file/
 cd ..
 cd ..
-
-conda deactivate
 
 ##Merge with R program
 
