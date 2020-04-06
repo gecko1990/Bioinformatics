@@ -1,0 +1,254 @@
+#!/bin/bash -l
+
+#Code for the annotation of genomes. Necessary parameters
+
+folder="/export/data1/projects/rlperez/Pescadero/Metagenomes/Bins_to_analyze/"
+THREADS="10"
+
+#Prokka parameters
+
+kingdom="Bacteria"
+
+#Pfam/TIGRFAM parameters
+
+Evalue="1e-5"
+Pfamdb="/export/data1/db/pfam_new/pfam33/Pfam-A.hmm"
+TIGRFAMdb="/export/data1/db/tigrfam/15.0/TIGRFAMs_15.0.hmm"
+
+#TMHMM parameters
+TMHMM_path="/export/data1/projects/rlperez/Resources/tmhmm-2.0c/bin/tmhmm"
+
+#COG parameters
+COGdb="/export/data1/projects/rlperez/Resources/database/COG2014/Blast_database/COG_blast_db" #You should have created before with the command and input file the .fa from the COG database: makeblastdb -in INPUT_FILE.fa -dbtype prot -out OUTPUT_FILES -parse_seqids
+COG_names="/export/data1/projects/rlperez/Resources/database/COG2014/cog2003-2014_only_names.csv" # You need a file.csv that has: 'prot-ID,Organism-ID' from the COG database. I do in the files of the COG database cut -d, -f-1,-2 cog2003-2014.csv > cog2003-2014_only_names.csv
+COGcsv="/export/data1/projects/rlperez/Resources/database/COG2014/cog2003-2014.csv"
+COGtab="/export/data1/projects/rlperez/Resources/database/COG2014/cognames2003-2014.tab"
+COGfolder="/export/data1/projects/rlperez/Resources/COGsoft.04.19.2012"
+
+#Masterfiles
+COG_script="/export/data1/projects/rlperez/Resources/COGs_annotation.R"
+Master_script="/export/data1/projects/rlperez/Resources/Master_file_annotation.R"
+
+##############################################################
+
+cd "$folder"
+
+cd Annotation
+
+source /export/data1/sw/anaconda3-2019.07/etc/profile.d/conda.sh
+
+for i in `cat ../Genomes/List_genomes_bacteria`
+
+do
+
+cd $i
+
+conda activate prokka 
+### Prokka module 
+#The headers of your FASTA file must be maximum 20 characters. Therefore, for the output of SPADes we do the following. Other assemblers might need changes.
+ln -s ../../Genomes/${i}.fasta
+
+sed 's/_length[^=]*$//' ${i}.fasta > Prokka_${i}.fasta
+
+prokka --outdir ./Prokka/ --addgenes --kingdom "$kingdom" --gcode 11 --cpus "$THREADS" --rfam --rnammer Prokka_${i}.fasta
+
+
+### Pfam module
+
+mkdir Pfam
+
+hmmscan -o ./Pfam/Pfam_hmmscan --tblout ./Pfam/table_hmmscan_Pfam --domtblout ./Pfam/domain_hmmscan_Pfam -E "$Evalue" --domE "$Evalue" --cpu "$THREADS" "$Pfamdb" ./Prokka/*.faa
+
+### TIGRFAM module
+
+mkdir TIGRFAM
+
+hmmscan -o ./TIGRFAM/TIGRFAM_hmmscan --tblout ./TIGRFAM/table_hmmscan_TIGRFAM --domtblout ./TIGRFAM/domain_hmmscan_TIGRFAM -E "$Evalue" --domE "$Evalue" --cpu "$THREADS" "$TIGRFAMdb" ./Prokka/*.faa
+
+### Predict TMHMM
+
+mkdir TMHMM
+
+"$TMHMM_path" ./Prokka/*.faa -workdir ./TMHMM/ | cat > ./TMHMM/TMHMM_output_file
+
+### Predict COGs
+
+mkdir COGs
+cd COGs
+mkdir BLAST_database Blastss Blastno Blastff Sequence_universe Blastcog
+
+#Make BLAST database
+
+makeblastdb -in ../Prokka/*.faa -dbtype prot -out ./BLAST_database/BLAST_database
+
+#Unfiltered unfiltered self-hit BLAST results in the ./Blastss/ directory
+
+psiblast -query ../Prokka/*.faa -db ./BLAST_database/BLAST_database -show_gis -outfmt 7 -max_target_seqs 10 -comp_based_stats F -seg no -out ./Blastss/Query_self.tab
+
+#Unfiltered BLAST results in the ./Blastno/ directory
+
+psiblast -query ../Prokka/*.faa -db "$COGdb" -show_gis -outfmt 7 -max_target_seqs 100 -comp_based_stats F -seg no -num_threads "$THREADS" -out ./Blastno/Query_COGs.tab
+
+# Filtered BLAST results in the ./Blastff/ directory
+
+psiblast -query ../Prokka/*.faa -db "$COGdb" -show_gis -outfmt 7 -max_target_seqs 100 -comp_based_stats T -seg yes -num_threads "$THREADS" -out ./Blastff/Query_COGs_filt.tab
+
+#You need a GeneQuery.p2o.csv file with Prot-ID,Genome_ID so we prepare collecting the prot IDS and adding the genome ID at the end of the line.
+
+#Old version, when you give the locustag grep '>' ../Prokka/*.faa | sed 's/\s.*/,'"$locustag"'/' | sed 's/>//' > ./Sequence_universe/GeneQuery.p2o.csv
+
+grep '>' ../Prokka/*.faa | sed 's/\(>.*\)\(_[0-9]*\)\( .*\)/\1\2,\1/' | sed 's/>//g' > ./Sequence_universe/GeneQuery.p2o.csv
+
+#makes ./BLASTcogn/hash.csv file
+
+cd Sequence_universe
+cat GeneQuery.p2o.csv "$COG_names" > tmp.p20.csv
+"$COGfolder"/COGmakehash/COGmakehash -i=tmp.p20.csv -o=../Blastcog/
+
+#Processing BLAST results: the program will read the BLAST results from the ./BLASTno/ and ./BLASTff/ directories and will store the pre-processed results in the ./BLASTconv/ directory.
+
+cd ..
+"$COGfolder"/COGreadblast/COGreadblast -d=./Blastcog/ -u=./Blastno/ -f=./Blastff/ -s=./Blastss/ -q=2 -t=2 -e=0.1
+
+#To run COGNITOR you need a COG domain assignment file (as described in 2.10.). If your file is called COGs.csv, the following command will be used:
+
+"$COGfolder"/COGcognitor/COGcognitor -i=./Blastcog/ -t="$COGcsv" -q=./Sequence_universe/GeneQuery.p2o.csv -o=Output_GeneQuery.assigned_COGs.csv
+
+### Compilation file
+
+cd ..
+mkdir Master_file
+
+#TMHMM
+cd TMHMM
+grep 'Number of predicted' TMHMM_output_file > summary_TMHMM
+cut -f 2,8 -d ' ' summary_TMHMM > summary_TMHMM_simple
+cd ..
+mv ./TMHMM/summary_TMHMM_simple ./Master_file/
+
+#Prokka
+cd Prokka
+grep 'CDS' *.gff > Prokka_outcome_CDS
+cd ..
+mv ./Prokka/Prokka_outcome_CDS ./Master_file/
+
+#Pfam
+cd Pfam
+mkdir Pfam_output_formated
+cd Pfam_output_formated
+#Remove head and tail that has extra info
+sed '/#/d' ../table_hmmscan_Pfam > table_Pfam_head_tail_removed
+#Print the columns of interest except the last one that is more complicated 
+awk '{ print $3,$1,$2,$5}' table_Pfam_head_tail_removed > Pfam_output_simple
+#For getting the last column substitute spaces by tabs
+sed 's/ /\t/g' Pfam_output_simple | head
+#Obtain the column 19 from the table Pfam output file. It has spaces inside the definition therefore we need to say to awk that we want from 19 to the end.
+awk '{ORS=" "; for(i=19;i<=NF;++i)print $i; print "\n"}' table_Pfam_head_tail_removed > Column_19
+#Output must be reformatted a bit
+sed -i 's/^ //' Column_19
+sed -i 's/ /_/g' Column_19
+sed -i 's/_$//' Column_19
+#Merge both files 
+paste Pfam_output_simple Column_19 | column -s $'\t' -t > Pfam_output_simple_complete
+#Concatenate several lines in one line. First make single files of columns 
+cut -d ' ' -f 1-2 Pfam_output_simple_complete > Columns_1_2
+#Then remove repeats
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_2 > Columns_1_2_concatenated
+#Repeat the cycle for every column
+cut -d ' ' -f 1,3 Pfam_output_simple_complete > Columns_1_3
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_3 > Columns_1_3_concatenated
+cut -d ' ' -f 1,4 Pfam_output_simple_complete > Columns_1_4
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_4 > Columns_1_4_concatenated
+awk '{print $1,$5}' Pfam_output_simple_complete > Columns_1_5
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_5 > Columns_1_5_concatenated
+#Clean the output files
+for f in $(ls *_concatenated); do sed -i 's/ | /;/g' $f ; done
+#Merge all the documents. Create a file with column 1
+awk '{print $1}' Columns_1_2_concatenated > Column_1_concat
+#Keep last column
+for f in $(ls *_concatenated); do awk '{print $2 }' $f > ${f}_last_column ; done
+paste Column_1_concat Columns_1_2_concatenated_last_column Columns_1_3_concatenated_last_column Columns_1_4_concatenated_last_column Columns_1_5_concatenated_last_column > Concatenated_Pfam_output
+#Move to the master
+mv Concatenated_Pfam_output ../../Master_file/
+cd ..
+cd ..
+
+##TIGRFAM
+cd TIGRFAM
+mkdir TIGRFAM_output_formated
+cd TIGRFAM_output_formated
+#Remove head and tail that has extra info
+sed '/#/d' ../table_hmmscan_TIGRFAM > table_TIGRFAM_head_tail_removed
+#Print the columns of interest except the last one that is more complicated 
+awk '{ print $3, $1, $5}' table_TIGRFAM_head_tail_removed > TIGRFAM_output_simple
+#For getting the last column substitute spaces by tabs
+sed 's/ /\t/g' TIGRFAM_output_simple | head
+#Obtain the column 19 from the table TIGRFAM output file. It has spaces inside the definition therefore we need to say to awk that we want from 19 to the end.
+awk '{ORS=" "; for(i=19;i<=NF;++i)print $i; print "\n"}' table_TIGRFAM_head_tail_removed > Column_19
+#Output must be reformatted a bit
+sed -i 's/^ //' Column_19
+sed -i 's/ /_/g' Column_19
+sed -i 's/_$//' Column_19
+#Merge both files 
+paste TIGRFAM_output_simple Column_19 | column -s $'\t' -t > TIGRFAM_output_simple_complete
+#Concatenate several lines in one line. First make single files of columns  and then remove repeats
+cut -d ' ' -f 1-2 TIGRFAM_output_simple_complete > Columns_1_2
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_2 > Columns_1_2_concatenated
+cut -d ' ' -f 1,3 TIGRFAM_output_simple_complete > Columns_1_3
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_3 > Columns_1_3_concatenated
+awk '{print $1,$4}' TIGRFAM_output_simple_complete > Columns_1_4
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_4 > Columns_1_4_concatenated
+#Clean the output files
+for f in $(ls *_concatenated); do sed -i 's/ | /;/g' $f ; done
+#Merge all the documents. Create a file with column 1
+awk '{print $1}' Columns_1_2_concatenated > Column_1_concat
+#Keep last column
+for f in $(ls *_concatenated); do awk '{print $2 }' $f > ${f}_last_column ; done
+paste Column_1_concat Columns_1_2_concatenated_last_column Columns_1_3_concatenated_last_column Columns_1_4_concatenated_last_column > Concatenated_TIGRFAM_output
+#Move to the master
+mv Concatenated_TIGRFAM_output ../../Master_file/
+cd ..
+cd ..
+
+##COGs
+cd COGs
+mkdir COG_output_format
+cd COG_output_format
+#Take columns that interest us:
+cut -d ',' -f 1,6 ../Output_GeneQuery.assigned_COGs.csv > COG_simple
+#The proteins with no hit appeared as -1. Remove them 
+sed '/-1/d' COG_simple > COG_simple_selection
+#Replace the comma for space for the following sed command
+sed -i 's/,/ /' COG_simple_selection
+#Add the info of the COG number with R
+ln -s "$COGtab"
+Rscript "$COG_script"
+#Reformat for the concatenation
+sed -i 's/"//g' COGs_completed
+#Do the concatenation
+cut -d ' ' -f 1-2 COGs_completed > Columns_1_2
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_2 > Columns_1_2_concatenated
+cut -d ' ' -f 1,3 COGs_completed > Columns_1_3
+sed -r ':a;N;s/^([^ ]*)( .*)\n\1(.*)$/\1\2 |\3/;ta;P;D' Columns_1_3 > Columns_1_3_concatenated
+#Clean the output files
+for f in $(ls *_concatenated); do sed -i 's/ | /;/g' $f ; done
+#Merge all the documents. Create a file with column 1
+awk '{print $1}' Columns_1_2_concatenated > Column_1_concat
+#Keep last column
+for f in $(ls *_concatenated); do awk '{print $2 }' $f > ${f}_last_column ; done
+paste Column_1_concat Columns_1_2_concatenated_last_column Columns_1_3_concatenated_last_column > Concatenated_COGs_output
+#Copy to the folder 
+cp Concatenated_COGs_output ../../Master_file/
+cd ..
+cd ..
+
+conda deactivate
+
+##Merge with R program
+
+cd Master_file
+mkdir R_master_file
+cd R_master_file
+Rscript "$Master_script"
+
+done
